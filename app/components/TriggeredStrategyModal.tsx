@@ -120,7 +120,12 @@ export default function TriggeredStrategyModal({
         <style jsx>{`
           .modal-overlay {
             position: fixed;
-            inset: 0;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            width: 100vw;
+            height: 100vh;
             background: rgba(0, 0, 0, 0.8);
             display: flex;
             align-items: center;
@@ -135,6 +140,7 @@ export default function TriggeredStrategyModal({
             border-radius: 16px;
             width: 90%;
             max-width: 420px;
+            margin: 0 auto;
             overflow: hidden;
             box-shadow: 
               0 0 0 1px rgba(163, 113, 247, 0.2),
