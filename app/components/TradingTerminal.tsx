@@ -1,9 +1,24 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useAccount, useSendTransaction, useWaitForTransactionReceipt, useSwitchChain } from "wagmi";
+import { useAccount, useSendTransaction, useWaitForTransactionReceipt, useSwitchChain, useReadContract, useWriteContract } from "wagmi";
 import { base } from "wagmi/chains";
-import { parseUnits, formatUnits } from "viem";
+import { parseUnits, formatUnits, erc20Abi } from "viem";
+
+// 1inch Aggregation Router v6 on Base
+const INCH_ROUTER_ADDRESS = "0x111111125421ca6dc452d289314280a0f8842a65" as const;
+// Native ETH address (used by 1inch)
+const NATIVE_ETH_ADDRESS = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+// Gas buffer to leave when selling all ETH (0.0005 ETH ~ $1.50 at $3000/ETH)
+const ETH_GAS_BUFFER = BigInt("500000000000000"); // 0.0005 ETH in wei
+
+// Sanitize amount string from LLM (removes token symbols, spaces, etc.)
+function sanitizeAmount(amount: string): string {
+  if (!amount) return "";
+  // Extract just the numeric part (including decimals)
+  const match = amount.match(/[\d.]+/);
+  return match ? match[0] : "";
+}
 import { SUPPORTED_NETWORKS, SupportedChainId } from "../config";
 import { parseTokenAmount } from "../lib/tokens";
 import { getMockQuote } from "../lib/inch-api";
@@ -105,8 +120,15 @@ export default function TradingTerminal() {
   // Wagmi hooks
   const { address, isConnected } = useAccount();
   const { sendTransaction, isPending: isSending } = useSendTransaction();
+  const { writeContract, isPending: isApproving } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isTxSuccess } = useWaitForTransactionReceipt({
     hash: txHash,
+  });
+  
+  // Approval state
+  const [approvalTxHash, setApprovalTxHash] = useState<`0x${string}` | undefined>();
+  const { isLoading: isApprovalConfirming, isSuccess: isApprovalSuccess } = useWaitForTransactionReceipt({
+    hash: approvalTxHash,
   });
 
   // Portfolio hook - fetches all token balances
@@ -151,6 +173,16 @@ export default function TradingTerminal() {
       setTxHash(undefined);
     }
   }, [isTxSuccess, txHash]);
+
+  // Handle successful approval - automatically proceed with swap
+  useEffect(() => {
+    if (isApprovalSuccess && approvalTxHash && pendingTrade) {
+      addToHistory("success", `✅ Approval confirmed! Now executing swap...`);
+      setApprovalTxHash(undefined);
+      // Proceed with the swap after approval
+      executeSwap();
+    }
+  }, [isApprovalSuccess, approvalTxHash]);
 
   const addToHistory = (type: HistoryEntry["type"], content: string) => {
     setHistory((prev) => [
@@ -264,12 +296,14 @@ export default function TradingTerminal() {
         return;
       }
 
-      // Calculate sell amount
+      // Calculate sell amount (sanitize to remove any token symbols from LLM output)
       let sellAmountWei: string;
+      const cleanSellAmount = sanitizeAmount(order.sellAmount);
+      const cleanBuyAmount = sanitizeAmount(order.buyAmount);
 
-      if (order.sellAmount && order.sellAmount !== "") {
-        sellAmountWei = parseTokenAmount(order.sellAmount, sellToken.decimals);
-      } else if (order.buyAmount && order.buyAmount !== "") {
+      if (cleanSellAmount && cleanSellAmount !== "") {
+        sellAmountWei = parseTokenAmount(cleanSellAmount, sellToken.decimals);
+      } else if (cleanBuyAmount && cleanBuyAmount !== "") {
         // Estimate sell amount based on mock prices
         const mockPrices: Record<string, number> = {
           ETH: 3200, WETH: 3200, USDC: 1, USDT: 1, DAI: 1,
@@ -278,7 +312,7 @@ export default function TradingTerminal() {
         };
         const buyPrice = mockPrices[buyToken.symbol] || 1;
         const sellPrice = mockPrices[sellToken.symbol] || 1;
-        const buyAmountNum = Number(order.buyAmount);
+        const buyAmountNum = Number(cleanBuyAmount);
         const estimatedSellAmount = (buyAmountNum * buyPrice) / sellPrice;
         sellAmountWei = parseTokenAmount(estimatedSellAmount.toFixed(6), sellToken.decimals);
 
@@ -319,23 +353,123 @@ export default function TradingTerminal() {
     setIsProcessing(false);
   };
 
-  const handleConfirmTrade = async () => {
-    if (!pendingTrade || !address) {
-      addToHistory("error", "Please connect your wallet first");
+  // Check if token needs approval and request it
+  const checkAndRequestApproval = async (): Promise<boolean> => {
+    if (!pendingTrade || !address) return false;
+    
+    const sellTokenAddress = pendingTrade.sellToken.address.toLowerCase();
+    
+    // Native ETH doesn't need approval
+    if (sellTokenAddress === NATIVE_ETH_ADDRESS.toLowerCase()) {
+      return true; // No approval needed
+    }
+
+    addToHistory("thinking", "Checking token allowance...");
+
+    try {
+      // Check current allowance via API
+      const response = await fetch(`/api/allowance?token=${pendingTrade.sellToken.address}&owner=${address}&spender=${INCH_ROUTER_ADDRESS}`);
+      const data = await response.json();
+      
+      setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+
+      if (!data.success) {
+        // If we can't check allowance, try to approve anyway
+        addToHistory("quote", "Requesting token approval...");
+      } else {
+        const currentAllowance = BigInt(data.allowance || "0");
+        const requiredAmount = BigInt(pendingTrade.sellAmountWei);
+        
+        if (currentAllowance >= requiredAmount) {
+          return true; // Already approved
+        }
+        
+        addToHistory("quote", `🔐 Approval needed for ${pendingTrade.sellToken.symbol}`);
+      }
+
+      // Request approval
+      addToHistory("thinking", "Confirm approval in your wallet...");
+      
+      writeContract(
+        {
+          address: pendingTrade.sellToken.address as `0x${string}`,
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [INCH_ROUTER_ADDRESS, BigInt(pendingTrade.sellAmountWei)],
+        },
+        {
+          onSuccess: (hash) => {
+            setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+            setApprovalTxHash(hash);
+            addToHistory("success", `📤 Approval sent! Waiting for confirmation...`);
+          },
+          onError: (error) => {
+            setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+            addToHistory("error", `Approval failed: ${error.message}`);
+          },
+        }
+      );
+      
+      return false; // Approval in progress, don't proceed with swap yet
+    } catch (error) {
+      setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+      addToHistory("error", error instanceof Error ? error.message : "Failed to check allowance");
+      return false;
+    }
+  };
+
+  // Execute the swap transaction
+  const executeSwap = async () => {
+    if (!pendingTrade || !address) return;
+
+    const isTestnet = currentChainId !== 8453;
+
+    // On testnet, run simulation mode
+    if (isTestnet) {
+      addToHistory("thinking", "Running simulation...");
+      
+      // Small delay to simulate processing
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+      addToHistory("success", `🧪 [SIMULATED] Swap successful!`);
+      addToHistory("quote", `Would swap: ${pendingTrade.quote.sellAmountDisplay} ${pendingTrade.sellToken.symbol} → ${pendingTrade.quote.buyAmountDisplay} ${pendingTrade.buyToken.symbol}`);
+      addToHistory("parsed", `ℹ️ This is a testnet simulation. Switch to Base Mainnet for real trades.`);
+      setPendingTrade(null);
       return;
     }
 
-    addToHistory("thinking", "Preparing transaction...");
+    addToHistory("thinking", "Preparing swap transaction...");
 
     try {
-      // Call swap API to get transaction data
+      // If selling native ETH, leave some for gas
+      let swapAmount = pendingTrade.sellAmountWei;
+      const isSellingEth = pendingTrade.sellToken.address.toLowerCase() === NATIVE_ETH_ADDRESS.toLowerCase();
+      
+      if (isSellingEth) {
+        const amountBigInt = BigInt(swapAmount);
+        if (amountBigInt > ETH_GAS_BUFFER) {
+          // Check if user might be swapping most of their ETH
+          const ethBalance = portfolio.balances.find(b => b.symbol === "ETH");
+          if (ethBalance) {
+            const balanceWei = BigInt(parseUnits(ethBalance.balance, 18));
+            const requestedAmount = BigInt(swapAmount);
+            // If swapping more than 95% of balance, leave gas buffer
+            if (requestedAmount > (balanceWei * BigInt(95)) / BigInt(100)) {
+              swapAmount = (balanceWei - ETH_GAS_BUFFER).toString();
+              addToHistory("quote", `📝 Adjusted to leave gas: swapping ${formatUnits(BigInt(swapAmount), 18)} ETH`);
+            }
+          }
+        }
+      }
+
       const response = await fetch("/api/swap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           src: pendingTrade.sellToken.address,
           dst: pendingTrade.buyToken.address,
-          amount: pendingTrade.sellAmountWei,
+          amount: swapAmount,
           from: address,
           slippage: 1,
         }),
@@ -359,8 +493,7 @@ export default function TradingTerminal() {
         return;
       }
 
-      // Execute the transaction
-      addToHistory("thinking", "Confirm in your wallet...");
+      addToHistory("thinking", "Confirm swap in your wallet...");
 
       sendTransaction(
         {
@@ -373,19 +506,40 @@ export default function TradingTerminal() {
           onSuccess: (hash) => {
             setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
             setTxHash(hash);
-            addToHistory("success", `📤 Transaction sent! Waiting for confirmation...`);
+            addToHistory("success", `📤 Swap sent! Waiting for confirmation...`);
           },
           onError: (error) => {
             setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
-            addToHistory("error", `Transaction failed: ${error.message}`);
+            addToHistory("error", `Swap failed: ${error.message}`);
           },
         }
       );
-
     } catch (error) {
       setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
       addToHistory("error", error instanceof Error ? error.message : "Failed to execute swap");
     }
+  };
+
+  const handleConfirmTrade = async () => {
+    if (!pendingTrade || !address) {
+      addToHistory("error", "Please connect your wallet first");
+      return;
+    }
+
+    // On testnet, skip approval and go straight to simulation
+    if (currentChainId !== 8453) {
+      await executeSwap();
+      return;
+    }
+
+    // Check and request approval if needed (mainnet only)
+    const isApproved = await checkAndRequestApproval();
+    
+    if (isApproved) {
+      // Already approved or native ETH, proceed with swap
+      await executeSwap();
+    }
+    // If not approved, the approval flow will trigger executeSwap after confirmation
   };
 
   const handleCancelTrade = () => {
@@ -427,24 +581,48 @@ export default function TradingTerminal() {
           </button>
           {showNetworkMenu && (
             <div className="network-menu">
-              {Object.entries(SUPPORTED_NETWORKS).map(([id, network]) => (
-                <button
-                  key={id}
-                  className={`network-option ${Number(id) === currentChainId ? "active" : ""}`}
-                  onClick={() => handleNetworkSwitch(Number(id) as SupportedChainId)}
-                >
-                  <span
-                    className="option-dot"
-                    style={{ background: network.color }}
-                  ></span>
-                  {network.name}
-                  {Number(id) === currentChainId && <span className="check">✓</span>}
-                </button>
-              ))}
+              {Object.entries(SUPPORTED_NETWORKS).map(([id, network]) => {
+                const isTestnet = Number(id) !== 8453;
+                return (
+                  <button
+                    key={id}
+                    className={`network-option ${Number(id) === currentChainId ? "active" : ""}`}
+                    onClick={() => handleNetworkSwitch(Number(id) as SupportedChainId)}
+                  >
+                    <span
+                      className="option-dot"
+                      style={{ background: network.color }}
+                    ></span>
+                    <span className="option-name">
+                      {network.name}
+                      {isTestnet && <span className="testnet-label">TEST</span>}
+                      {!isTestnet && <span className="mainnet-label">REAL $</span>}
+                    </span>
+                    {Number(id) === currentChainId && <span className="check">✓</span>}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
       </div>
+
+      {/* Testnet Warning Banner */}
+      {currentChainId !== 8453 && (
+        <div className="testnet-banner">
+          <span className="testnet-icon">🧪</span>
+          <span className="testnet-text">
+            <strong>TEST MODE</strong> — Trades are simulated. No real tokens exchanged.
+          </span>
+          <button 
+            className="testnet-switch-btn"
+            onClick={() => handleNetworkSwitch(8453)}
+            disabled={isSwitching}
+          >
+            {isSwitching ? "Switching..." : "Trade Real $ →"}
+          </button>
+        </div>
+      )}
 
       {/* Terminal Body */}
       <div className="terminal-body">
@@ -551,16 +729,22 @@ export default function TradingTerminal() {
                 Cancel
               </button>
               <button
-                className="confirm-btn execute"
+                className={`confirm-btn execute ${currentChainId !== 8453 ? "testnet-mode" : ""}`}
                 onClick={handleConfirmTrade}
-                disabled={isSending || isConfirming || !isConnected}
+                disabled={isSending || isConfirming || isApproving || isApprovalConfirming || !isConnected}
               >
                 {!isConnected
                   ? "Connect Wallet"
+                  : isApproving
+                  ? "Approve in Wallet..."
+                  : isApprovalConfirming
+                  ? "Approving..."
                   : isSending
                   ? "Confirm in Wallet..."
                   : isConfirming
                   ? "Confirming..."
+                  : currentChainId !== 8453
+                  ? "🧪 Simulate Trade"
                   : "⚡ Execute Trade"}
               </button>
             </div>
@@ -686,6 +870,56 @@ export default function TradingTerminal() {
           border-bottom: 1px solid #21262d;
         }
 
+        /* Testnet Banner */
+        .testnet-banner {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          padding: 10px 16px;
+          background: linear-gradient(90deg, rgba(251, 191, 36, 0.15) 0%, rgba(245, 158, 11, 0.1) 100%);
+          border-bottom: 1px solid rgba(251, 191, 36, 0.3);
+          flex-wrap: wrap;
+        }
+
+        .testnet-icon {
+          font-size: 16px;
+        }
+
+        .testnet-text {
+          color: #fbbf24;
+          font-size: 12px;
+        }
+
+        .testnet-text strong {
+          color: #fcd34d;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        .testnet-switch-btn {
+          background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+          border: none;
+          color: #ffffff;
+          padding: 6px 12px;
+          border-radius: 6px;
+          font-size: 11px;
+          font-family: inherit;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .testnet-switch-btn:hover:not(:disabled) {
+          background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%);
+          box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+        }
+
+        .testnet-switch-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
         .terminal-dots {
           display: flex;
           gap: 8px;
@@ -807,6 +1041,30 @@ export default function TradingTerminal() {
           width: 8px;
           height: 8px;
           border-radius: 50%;
+        }
+
+        .option-name {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .testnet-label {
+          background: rgba(251, 191, 36, 0.2);
+          color: #fbbf24;
+          font-size: 9px;
+          padding: 2px 5px;
+          border-radius: 3px;
+          font-weight: 600;
+        }
+
+        .mainnet-label {
+          background: rgba(63, 185, 80, 0.2);
+          color: #3fb950;
+          font-size: 9px;
+          padding: 2px 5px;
+          border-radius: 3px;
+          font-weight: 600;
         }
 
         .check {
@@ -1048,6 +1306,15 @@ export default function TradingTerminal() {
         .confirm-btn.execute:hover:not(:disabled) {
           background: linear-gradient(135deg, #2ea043 0%, #3fb950 100%);
           box-shadow: 0 0 20px rgba(46, 160, 67, 0.4);
+        }
+
+        .confirm-btn.execute.testnet-mode {
+          background: linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%);
+        }
+
+        .confirm-btn.execute.testnet-mode:hover:not(:disabled) {
+          background: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%);
+          box-shadow: 0 0 20px rgba(139, 92, 246, 0.4);
         }
 
         .confirm-btn:disabled {
