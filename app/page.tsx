@@ -2,8 +2,9 @@
 
 import { sdk } from '@farcaster/miniapp-sdk';
 import { useEffect } from 'react';
-import { useMiniApp } from './providers/miniAppProvider';
 import TradingTerminal from './components/TradingTerminal';
+import WalletPortfolio from './components/WalletPortfolio';
+import { useMiniApp } from './providers/miniAppProvider';
 
 export default function Home() {
   const { isInMiniApp, context } = useMiniApp();
@@ -19,7 +20,7 @@ export default function Home() {
 
       <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-4 sm:p-6">
         {/* Header */}
-        <header className="w-full max-w-[720px] mb-6">
+        <header className="w-full max-w-[1080px] mb-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#58a6ff] to-[#a371f7] flex items-center justify-center">
@@ -41,13 +42,14 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Main Terminal */}
-        <main className="w-full flex justify-center">
+        {/* Main Content */}
+        <main className="w-full max-w-[1080px] flex flex-col lg:flex-row gap-6 justify-center items-start">
           <TradingTerminal />
+          <WalletPortfolio />
         </main>
 
         {/* Footer */}
-        <footer className="w-full max-w-[720px] mt-8">
+        <footer className="w-full max-w-[1080px] mt-8">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#484f58]">
             <div className="flex items-center gap-4">
               <a
