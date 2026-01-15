@@ -9,19 +9,19 @@
   },
   "miniapp": {
     "version": "1",
-    "name": "Base Mini App Starter",
-    "homeUrl": "https://starterminiapp.com",
-    "iconUrl": "https://starterminiapp.com/icon.png",
-    "splashImageUrl": "https://starterminiapp.com/splash.png",
-    "splashBackgroundColor": "#000000",
-    "heroImageUrl": "https://starterminiapp.com/hero.png",
-    "subtitle": "Build your Base Mini App",
-    "description": "Clone this starter template to build your own Base Mini App. Customize this description to explain what your app does (max 170 chars).",
-    "primaryCategory": "developer-tools",
-    "tags": ["starter", "template", "miniapp"],
-    "ogTitle": "Base Mini App Starter",
-    "ogDescription": "Clone and customize this template to build your Base Mini App",
-    "ogImageUrl": "https://starterminiapp.com/hero.png"
+    "name": "Text-To-Trade",
+    "homeUrl": "https://text-to-trade.vercel.app",
+    "iconUrl": "https://text-to-trade.vercel.app/icon.png",
+    "splashImageUrl": "https://text-to-trade.vercel.app/splash.png",
+    "splashBackgroundColor": "#0d1117",
+    "heroImageUrl": "https://text-to-trade.vercel.app/hero.png",
+    "subtitle": "Trade with natural language",
+    "description": "Swap tokens on Base using plain English. Just type 'swap 100 USDC for ETH' or 'ape into DEGEN' and execute trades instantly via 1inch.",
+    "primaryCategory": "defi",
+    "tags": ["trading", "defi", "swap", "base", "1inch"],
+    "ogTitle": "Text-To-Trade",
+    "ogDescription": "Trade on Base using natural language. Powered by AI and 1inch.",
+    "ogImageUrl": "https://text-to-trade.vercel.app/hero.png"
   }
 }
 
