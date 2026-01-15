@@ -147,3 +147,16 @@ export function parseTokenAmount(
   return BigInt(combined).toString();
 }
 
+// Get list of token symbols for LLM prompt
+export function getTokenSymbols(): string[] {
+  return Object.keys(BASE_TOKENS);
+}
+
+// Get list of token symbols with aliases for LLM
+export function getTokenSymbolsWithAliases(): string[] {
+  return [...Object.keys(BASE_TOKENS), ...Object.keys(TOKEN_ALIASES)];
+}
+
+// Export aliases for external use
+export { TOKEN_ALIASES };
+

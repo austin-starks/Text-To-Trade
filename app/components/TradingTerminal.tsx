@@ -1,14 +1,20 @@
 "use client";
 
-
 import { useState, useRef, useEffect } from "react";
 import { useAccount, useSendTransaction, useWaitForTransactionReceipt, useSwitchChain } from "wagmi";
 import { base } from "wagmi/chains";
 import { parseUnits, formatUnits } from "viem";
 import { SUPPORTED_NETWORKS, SupportedChainId } from "../config";
-import { resolveToken, parseTokenAmount } from "../lib/tokens";
+import { parseTokenAmount } from "../lib/tokens";
 import { getMockQuote } from "../lib/inch-api";
 import { QuoteResult, TokenInfo } from "../types/order";
+import { usePortfolio } from "../hooks/usePortfolio";
+
+// Token cache for resolving tokens
+interface TokenCache {
+  tokens: Record<string, TokenInfo>;
+  count: number;
+}
 
 
 
@@ -21,6 +27,30 @@ interface LLMParsedOrder {
   buyAmount: string;
   confidence: number;
   reasoning: string;
+}
+
+interface BalanceCheck {
+  hasSufficientBalance: boolean;
+  availableBalance: string;
+  shortfall: string;
+}
+
+interface Suggestion {
+  hasAlternative: boolean;
+  alternativeAction: string;
+  alternativeSellToken: string;
+  alternativeSellAmount: string;
+  alternativeBuyToken: string;
+}
+
+interface ParseOrderResponse {
+  success: boolean;
+  intent: "trade" | "question";
+  answer: string;
+  order: LLMParsedOrder;
+  balanceCheck: BalanceCheck;
+  suggestion: Suggestion;
+  error?: string;
 }
 
 interface HistoryEntry {
@@ -79,6 +109,36 @@ export default function TradingTerminal() {
     hash: txHash,
   });
 
+  // Portfolio hook - fetches all token balances
+  const portfolio = usePortfolio();
+
+  // Token cache - fetched from 1inch API
+  const [tokenCache, setTokenCache] = useState<TokenCache>({ tokens: {}, count: 0 });
+  const [showTokenModal, setShowTokenModal] = useState(false);
+  const [tokenSearch, setTokenSearch] = useState("");
+
+  // Fetch tokens on mount
+  useEffect(() => {
+    async function fetchTokens() {
+      try {
+        const response = await fetch("/api/tokens");
+        const data = await response.json();
+        if (data.success && data.tokens) {
+          setTokenCache({ tokens: data.tokens, count: data.count });
+        }
+      } catch (error) {
+        console.warn("Failed to fetch token list");
+      }
+    }
+    fetchTokens();
+  }, []);
+
+  // Resolve token from cache
+  const resolveToken = (symbol: string): TokenInfo | null => {
+    const normalized = symbol.toUpperCase().trim();
+    return tokenCache.tokens[normalized] || null;
+  };
+
   useEffect(() => {
     historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [history]);
@@ -117,25 +177,50 @@ export default function TradingTerminal() {
     addToHistory("thinking", "Parsing with AI...");
 
     try {
+      // Prepare portfolio data for the API
+      const portfolioData = portfolio.balances.map((b) => ({
+        symbol: b.symbol,
+        balance: b.balance,
+      }));
+
       // Call the LLM API to parse the order
       const response = await fetch("/api/parse-order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: userInput }),
+        body: JSON.stringify({ 
+          input: userInput,
+          portfolio: isConnected ? portfolioData : undefined,
+        }),
       });
 
-      const data = await response.json();
+      const data: ParseOrderResponse = await response.json();
 
       // Remove thinking message
       setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
 
-      if (!data.success || !data.order) {
-        addToHistory("error", data.error || "Could not understand that trade request");
+      if (!data.success) {
+        addToHistory("error", data.error || "Could not understand that request");
         setIsProcessing(false);
         return;
       }
 
-      const order: LLMParsedOrder = data.order;
+      // Handle questions
+      if (data.intent === "question") {
+        addToHistory("parsed", `🤖 ${data.answer}`);
+        setIsProcessing(false);
+        return;
+      }
+
+      // Handle trades
+      if (!data.order) {
+        addToHistory("error", "Could not parse trade request");
+        setIsProcessing(false);
+        return;
+      }
+
+      const order = data.order;
+      const balanceCheck = data.balanceCheck;
+      const suggestion = data.suggestion;
 
       // Show confidence and reasoning
       const confidenceEmoji = order.confidence >= 0.8 ? "🟢" : order.confidence >= 0.5 ? "🟡" : "🔴";
@@ -146,6 +231,27 @@ export default function TradingTerminal() {
 
       if (order.reasoning) {
         addToHistory("parsed", `AI: ${order.reasoning}`);
+      }
+
+      // Check balance and show warnings/suggestions
+      if (balanceCheck && !balanceCheck.hasSufficientBalance) {
+        if (balanceCheck.availableBalance) {
+          addToHistory("error", `⚠️ Insufficient ${order.sellToken}: You have ${balanceCheck.availableBalance}, need ${order.sellAmount || "more"}`);
+        }
+        if (balanceCheck.shortfall) {
+          addToHistory("error", `Shortfall: ${balanceCheck.shortfall} ${order.sellToken}`);
+        }
+        
+        // Show alternative suggestion
+        if (suggestion && suggestion.hasAlternative) {
+          addToHistory("quote", `💡 Suggestion: ${suggestion.alternativeAction}`);
+          if (suggestion.alternativeSellToken && suggestion.alternativeSellAmount && suggestion.alternativeBuyToken) {
+            addToHistory("confirm", `Try: "swap ${suggestion.alternativeSellAmount} ${suggestion.alternativeSellToken} for ${suggestion.alternativeBuyToken}"`);
+          }
+        }
+        
+        setIsProcessing(false);
+        return;
       }
 
       // Validate tokens exist
@@ -480,12 +586,72 @@ export default function TradingTerminal() {
       </div>
 
       {/* Footer */}
+      {/* Token List Modal */}
+      {showTokenModal && (
+        <div className="modal-overlay" onClick={() => setShowTokenModal(false)}>
+          <div className="token-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Supported Tokens ({tokenCache.count})</h3>
+              <button className="modal-close" onClick={() => setShowTokenModal(false)}>×</button>
+            </div>
+            <div className="modal-search">
+              <input
+                type="text"
+                placeholder="Search tokens..."
+                value={tokenSearch}
+                onChange={(e) => setTokenSearch(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="token-list">
+              {Object.values(tokenCache.tokens)
+                .filter((token) => 
+                  token.symbol.toLowerCase().includes(tokenSearch.toLowerCase()) ||
+                  token.name.toLowerCase().includes(tokenSearch.toLowerCase())
+                )
+                .sort((a, b) => a.symbol.localeCompare(b.symbol))
+                .map((token) => (
+                  <div 
+                    key={token.symbol} 
+                    className="token-item"
+                    onClick={() => {
+                      setInput(`swap ${token.symbol} for `);
+                      setShowTokenModal(false);
+                      setTokenSearch("");
+                      inputRef.current?.focus();
+                    }}
+                  >
+                    <div className="token-icon">
+                      {token.logoUrl ? (
+                        <img src={token.logoUrl} alt={token.symbol} onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }} />
+                      ) : (
+                        <span>{token.symbol.slice(0, 2)}</span>
+                      )}
+                    </div>
+                    <div className="token-info">
+                      <span className="token-symbol">{token.symbol}</span>
+                      <span className="token-name">{token.name}</span>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="terminal-footer">
         <div className="footer-left">
           <span className="token-badge">ETH</span>
           <span className="token-badge">USDC</span>
           <span className="token-badge">DEGEN</span>
-          <span className="token-badge">+8 more</span>
+          <button 
+            className="token-badge clickable"
+            onClick={() => setShowTokenModal(true)}
+          >
+            {tokenCache.count > 0 ? `+${tokenCache.count - 3} more` : "loading..."}
+          </button>
         </div>
         <div className="footer-right">
           {isConnected ? (
@@ -955,6 +1121,170 @@ export default function TradingTerminal() {
           border-radius: 4px;
           font-size: 10px;
           font-weight: 500;
+          border: none;
+          font-family: inherit;
+        }
+
+        .token-badge.clickable {
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .token-badge.clickable:hover {
+          background: #30363d;
+          color: #58a6ff;
+        }
+
+        /* Token Modal */
+        .modal-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.7);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1000;
+          backdrop-filter: blur(4px);
+        }
+
+        .token-modal {
+          background: #161b22;
+          border: 1px solid #30363d;
+          border-radius: 16px;
+          width: 90%;
+          max-width: 480px;
+          max-height: 70vh;
+          display: flex;
+          flex-direction: column;
+          box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+          animation: modalSlideIn 0.2s ease;
+        }
+
+        @keyframes modalSlideIn {
+          from {
+            opacity: 0;
+            transform: scale(0.95) translateY(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1) translateY(0);
+          }
+        }
+
+        .modal-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 16px 20px;
+          border-bottom: 1px solid #21262d;
+        }
+
+        .modal-header h3 {
+          color: #f0f6fc;
+          font-size: 16px;
+          font-weight: 600;
+          margin: 0;
+        }
+
+        .modal-close {
+          background: none;
+          border: none;
+          color: #8b949e;
+          font-size: 24px;
+          cursor: pointer;
+          padding: 0;
+          line-height: 1;
+          transition: color 0.15s ease;
+        }
+
+        .modal-close:hover {
+          color: #f0f6fc;
+        }
+
+        .modal-search {
+          padding: 12px 16px;
+          border-bottom: 1px solid #21262d;
+        }
+
+        .modal-search input {
+          width: 100%;
+          background: #0d1117;
+          border: 1px solid #30363d;
+          border-radius: 8px;
+          padding: 10px 14px;
+          color: #f0f6fc;
+          font-size: 14px;
+          font-family: inherit;
+          outline: none;
+        }
+
+        .modal-search input:focus {
+          border-color: #58a6ff;
+        }
+
+        .modal-search input::placeholder {
+          color: #484f58;
+        }
+
+        .token-list {
+          flex: 1;
+          overflow-y: auto;
+          padding: 8px;
+        }
+
+        .token-item {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 10px 12px;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: background 0.15s ease;
+        }
+
+        .token-item:hover {
+          background: #21262d;
+        }
+
+        .token-icon {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          background: #30363d;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          flex-shrink: 0;
+        }
+
+        .token-icon img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+
+        .token-icon span {
+          color: #8b949e;
+          font-size: 11px;
+          font-weight: 600;
+        }
+
+        .token-info {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .token-symbol {
+          color: #f0f6fc;
+          font-size: 14px;
+          font-weight: 600;
+        }
+
+        .token-name {
+          color: #8b949e;
+          font-size: 12px;
         }
 
         .wallet-badge {
