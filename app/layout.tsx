@@ -11,21 +11,21 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Base Mini App Starter - npx starterminiapp",
-  description: "Bootstrap your Base Mini App in seconds with npx starterminiapp. Zero-config CLI for Farcaster Mini Apps with Next.js, TypeScript, Wagmi, and Base integration.",
-  metadataBase: new URL('https://starterminiapp.com'),
-  keywords: ["base", "farcaster", "mini app", "nextjs", "starter", "template", "cli", "npm", "npx", "starterminiapp"],
+  title: "Text-To-Trade | Natural Language Trading on Base",
+  description: "Swap tokens on Base using plain English. Just type 'swap 100 USDC for ETH' or 'ape into DEGEN' and execute trades instantly via 1inch.",
+  metadataBase: new URL('https://text-to-trade.vercel.app'),
+  keywords: ["base", "farcaster", "mini app", "trading", "defi", "swap", "1inch", "natural language", "ai"],
   openGraph: {
-    title: "Base Mini App Starter - npx starterminiapp",
-    description: "Bootstrap your Base Mini App in one command: npx starterminiapp my-app. Ready-to-deploy template for Farcaster with Base integration.",
-    url: "https://starterminiapp.com",
-    siteName: "Base Mini App Starter",
+    title: "Text-To-Trade | Natural Language Trading on Base",
+    description: "Trade on Base using natural language. Powered by AI and 1inch.",
+    url: "https://text-to-trade.vercel.app",
+    siteName: "Text-To-Trade",
     images: [
       {
         url: "/hero.png",
         width: 1200,
         height: 630,
-        alt: "Base Mini App Starter - npx starterminiapp"
+        alt: "Text-To-Trade - Natural Language Trading on Base"
       }
     ],
     locale: "en_US",
@@ -33,8 +33,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Base Mini App Starter - npx starterminiapp",
-    description: "Bootstrap your Base Mini App in one command: npx starterminiapp my-app",
+    title: "Text-To-Trade | Natural Language Trading on Base",
+    description: "Trade on Base using natural language. Powered by AI and 1inch.",
     images: ["/hero.png"]
   },
   icons: {
@@ -45,15 +45,15 @@ export const metadata: Metadata = {
     "base:app_id": "69692b388b0e0e7315e206f0",
     "fc:miniapp": JSON.stringify({
       version: "1",
-      imageUrl: "https://starterminiapp.com/hero.png",
+      imageUrl: "https://text-to-trade.vercel.app/hero.png",
       button: {
-        title: "Open App",
+        title: "Start Trading",
         action: {
           type: "launch_miniapp",
-          url: "https://starterminiapp.com",
-          name: "Base Mini App Starter",
-          splashImageUrl: "https://starterminiapp.com/splash.png",
-          splashBackgroundColor: "#000000"
+          url: "https://text-to-trade.vercel.app",
+          name: "Text-To-Trade",
+          splashImageUrl: "https://text-to-trade.vercel.app/splash.png",
+          splashBackgroundColor: "#0d1117"
         }
       }
     })
