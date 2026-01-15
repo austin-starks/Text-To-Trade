@@ -96,7 +96,7 @@ export default function WalletPortfolio() {
         const result = tokenBalances[index];
         if (result.status === "success" && result.result) {
           const balance = result.result as bigint;
-          if (balance > 0n) {
+          if (balance > BigInt(0)) {
             const formatted = formatUnits(balance, token.decimals);
             const balanceNum = parseFloat(formatted);
             const usdValue = balanceNum * (MOCK_PRICES[token.symbol] || 0);
