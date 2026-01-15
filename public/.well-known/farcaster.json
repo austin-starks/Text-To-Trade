@@ -1,4 +1,9 @@
 {
+  "accountAssociation": {
+    "header": "eyJmaWQiOjIyODUxMTIsInR5cGUiOiJjdXN0b2R5Iiwia2V5IjoiMHhjM0QzM2E4ODQ2MTc1ZDlhOTg3MkFEZmQzMTBiYkJiYUM3ZDVDMjE0In0",
+    "payload": "eyJkb21haW4iOiJ0ZXh0LXRvLXRyYWRlLnZlcmNlbC5hcHAifQ",
+    "signature": "Gj5bYj02V63II6tA54WWRIy46jusXpIi+afXlUQzPHE2jkjzroCqSpWeRClef36gedP7r6Q/ev9NSrHrtoForBw="
+  },
   "baseBuilder": {
     "allowedAddresses": ["0x38402451A50E823aC2fF166F17Ce7aE029d0c408"]
   },
@@ -19,4 +24,3 @@
     "ogImageUrl": "https://text-to-trade.vercel.app/hero.png"
   }
 }
-
