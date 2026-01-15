@@ -109,10 +109,11 @@ const TRADE_ORDER_SCHEMA = {
 
 // Common token aliases that users might say
 const TOKEN_ALIASES: Record<string, string> = {
-  // Bitcoin variants
-  "BTC": "WBTC",
-  "BITCOIN": "WBTC",
-  "WRAPPED BITCOIN": "WBTC",
+  // Bitcoin variants - use cbBTC (Coinbase Wrapped BTC) on Base
+  "BTC": "cbBTC",
+  "BITCOIN": "cbBTC",
+  "WRAPPED BITCOIN": "cbBTC",
+  "WBTC": "cbBTC", // Redirect WBTC requests to cbBTC on Base
   // Ethereum variants  
   "ETHEREUM": "ETH",
   "ETHER": "ETH",
@@ -146,7 +147,7 @@ ${tokenSymbols.join(", ")}
 TOKEN ALIASES (auto-convert these):
 ${aliasExamples}
 - If user says a common name, convert to the actual token symbol
-- "BTC" or "Bitcoin" → use WBTC (wrapped Bitcoin on Base)
+- "BTC" or "Bitcoin" → use cbBTC (Coinbase Wrapped BTC on Base)
 - "stables" or "dollars" → use USDC
 
 INTENT DETECTION:
@@ -160,7 +161,7 @@ TRADE RULES:
 - "sell X" = sell X (receive USDC)
 - Slang: "ape into" = buy aggressively, "dump" = sell, "stack" = buy, "yolo" = buy all-in
 - "$" amounts = USD value (use USDC)
-- ALWAYS output the actual token symbol (e.g., WBTC not BTC, USDC not USD)
+- ALWAYS output the actual token symbol (e.g., cbBTC not BTC, USDC not USD)
 - If token not in supported list, set confidence to 0
 - Keep reasoning under 20 words`;
 
@@ -175,7 +176,7 @@ BALANCE VALIDATION:
 - NEVER suggest swapping a token for itself (e.g., "swap ETH for ETH" is invalid)
 - If user wants to buy X but has no sell token, suggest using their largest holding to buy X
 - The alternative sell token must be DIFFERENT from the buy token
-- Example: User wants "1 WBTC → ETH" but has no WBTC, has 0.002 ETH → suggest "swap 0.001 ETH for WBTC" (buying what they originally wanted to sell)
+- Example: User wants "1 cbBTC → ETH" but has no cbBTC, has 0.002 ETH → suggest "swap 0.001 ETH for cbBTC" (buying what they originally wanted to sell)
 - Always be helpful and suggest what IS possible with their portfolio`
     : `
 

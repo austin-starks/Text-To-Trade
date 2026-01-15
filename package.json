@@ -34,5 +34,10 @@
     "@types/react-dom": "^19",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "overrides": {
+    "use-sync-external-store": "^1.4.0",
+    "react": "$react",
+    "react-dom": "$react-dom"
   }
 }

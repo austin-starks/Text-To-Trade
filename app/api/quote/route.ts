@@ -22,14 +22,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const url = new URL(\`\${INCH_API_BASE}/\${BASE_CHAIN_ID}/quote\`);
+    const url = new URL(`${INCH_API_BASE}/${BASE_CHAIN_ID}/quote`);
     url.searchParams.set("src", sellTokenAddress);
     url.searchParams.set("dst", buyTokenAddress);
     url.searchParams.set("amount", amount);
 
     const response = await fetch(url.toString(), {
       headers: {
-        Authorization: \`Bearer \${apiKey}\`,
+        Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
       },
     });
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
     if (!response.ok) {
       const errorText = await response.text();
       return NextResponse.json(
-        { error: \`1inch API error: \${response.status} - \${errorText}\` },
+        { error: `1inch API error: ${response.status} - ${errorText}` },
         { status: response.status }
       );
     }
