@@ -1,7 +1,7 @@
 import { TokenInfo, QuoteResult } from "../types/order";
 import { formatTokenAmount } from "./tokens";
+import { SupportedChainId } from "../config";
 
-const BASE_CHAIN_ID = 8453;
 const INCH_API_BASE = "https://api.1inch.dev/swap/v6.0";
 
 interface InchQuoteResponse {
@@ -39,9 +39,10 @@ export async function getQuote(
   sellToken: TokenInfo,
   buyToken: TokenInfo,
   sellAmount: string, // In wei/smallest unit
-  apiKey: string
+  apiKey: string,
+  chainId: SupportedChainId
 ): Promise<QuoteResult> {
-  const url = new URL(`${INCH_API_BASE}/${BASE_CHAIN_ID}/quote`);
+  const url = new URL(`${INCH_API_BASE}/${chainId}/quote`);
   url.searchParams.set("src", sellToken.address);
   url.searchParams.set("dst", buyToken.address);
   url.searchParams.set("amount", sellAmount);
@@ -97,7 +98,8 @@ export async function getQuote(
 export function getMockQuote(
   sellToken: TokenInfo,
   buyToken: TokenInfo,
-  sellAmount: string
+  sellAmount: string,
+  chainId: SupportedChainId
 ): QuoteResult {
   // Simulate some realistic-ish prices
   const mockPrices: Record<string, number> = {

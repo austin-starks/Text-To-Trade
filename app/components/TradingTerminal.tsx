@@ -1,13 +1,11 @@
 "use client";
 
 
-import { useState, useRef, useEffect } from "react";
-import { useAccount, useSendTransaction, useWaitForTransactionReceipt, useSwitchChain } from "wagmi";
+import { useEffect, useRef, useState } from "react";
+import { useAccount, useSendTransaction, useSwitchChain, useWaitForTransactionReceipt } from "wagmi";
 import { base } from "wagmi/chains";
-import { parseUnits, formatUnits } from "viem";
 import { SUPPORTED_NETWORKS, SupportedChainId } from "../config";
-import { resolveToken, parseTokenAmount } from "../lib/tokens";
-import { getMockQuote } from "../lib/inch-api";
+import { formatTokenAmount, parseTokenAmount, resolveToken } from "../lib/tokens";
 import { QuoteResult, TokenInfo } from "../types/order";
 
 
@@ -183,8 +181,37 @@ export default function TradingTerminal() {
         return;
       }
 
-      // Get quote (mock for now, ready for real 1inch)
-      const quote = getMockQuote(sellToken, buyToken, sellAmountWei);
+      // Get quote from 0x API
+      addToHistory("thinking", "Fetching quote from 0x...");
+
+      const quoteResponse = await fetch(
+        `/api/swap?src=${sellToken.address}&dst=${buyToken.address}&amount=${sellAmountWei}&chainId=${currentChainId}`
+      );
+      const quoteData = await quoteResponse.json();
+
+      setHistory((prev) => prev.filter((h) => h.type !== "thinking" || !h.content.includes("Fetching quote")));
+
+      if (!quoteResponse.ok || !quoteData.success) {
+        addToHistory("error", quoteData.error || "Failed to get quote");
+        setIsProcessing(false);
+        return;
+      }
+
+      // Build quote result from API response
+      const quote: QuoteResult = {
+        sellToken,
+        buyToken,
+        sellAmount: quoteData.srcAmount,
+        buyAmount: quoteData.dstAmount,
+        sellAmountDisplay: formatTokenAmount(quoteData.srcAmount, sellToken.decimals),
+        buyAmountDisplay: formatTokenAmount(quoteData.dstAmount, buyToken.decimals),
+        estimatedGas: quoteData.gas?.toString() || "150000",
+        protocols: quoteData.protocols || [],
+      };
+
+      if (quoteData.mock) {
+        addToHistory("quote", "⚠️ Preview mode - no 0x API key configured");
+      }
 
       addToHistory(
         "quote",
@@ -192,7 +219,7 @@ export default function TradingTerminal() {
       );
       addToHistory(
         "quote",
-        `Route: ${quote.protocols.join(" → ")} | Gas: ~${Number(quote.estimatedGas).toLocaleString()}`
+        `Route: ${quote.protocols.length > 0 ? quote.protocols.join(" → ") : "Direct"} | Gas: ~${Number(quote.estimatedGas).toLocaleString()}`
       );
 
       // Set pending trade for confirmation
@@ -244,7 +271,7 @@ export default function TradingTerminal() {
       }
 
       if (data.mock) {
-        addToHistory("quote", "⚠️ Preview mode - no 1inch API key configured");
+        addToHistory("quote", "⚠️ Preview mode - no 0x API key configured");
         addToHistory("success", "Would execute: " + JSON.stringify({
           to: data.tx.to,
           value: data.tx.value,
