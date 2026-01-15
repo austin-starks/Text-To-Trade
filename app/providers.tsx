@@ -6,6 +6,7 @@ import { WagmiProvider } from "wagmi";
 import { config } from "./config";
 import { MiniAppIndicator } from "./providers/miniAppIndicator";
 import { MiniAppProvider } from "./providers/miniAppProvider";
+import { StrategyProvider } from "./contexts/StrategyContext";
 
 const queryClient = new QueryClient();
 
@@ -15,7 +16,9 @@ export function Providers({ children }: { children: ReactNode }) {
       <MiniAppIndicator />
       <WagmiProvider config={config}>
         <QueryClientProvider client={queryClient}>
-          {children}
+          <StrategyProvider>
+            {children}
+          </StrategyProvider>
         </QueryClientProvider>
       </WagmiProvider>
     </MiniAppProvider>

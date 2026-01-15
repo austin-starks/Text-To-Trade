@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatUnits } from "viem";
 import { useAccount, useBalance, useReadContracts } from "wagmi";
 import { BASE_TOKENS } from "../lib/tokens";
@@ -42,6 +42,12 @@ interface TokenBalance {
 
 export default function WalletPortfolio() {
   const { address, isConnected } = useAccount();
+  const [mounted, setMounted] = useState(false);
+
+  // Prevent hydration mismatch
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Fetch native ETH balance
   const { data: ethBalance, isLoading: ethLoading } = useBalance({
@@ -124,12 +130,33 @@ export default function WalletPortfolio() {
 
   const isLoading = ethLoading || tokensLoading;
 
+  // Show consistent loading state before hydration
+  if (!mounted) {
+    return (
+      <div className="portfolio-container">
+        <div className="portfolio-header">
+          <div className="header-left">
+            <span className="portfolio-icon">💼</span>
+            <span className="portfolio-title">Portfolio</span>
+          </div>
+        </div>
+        <div className="loading-state">
+          <span className="spinner">⟳</span>
+          <span>Loading...</span>
+        </div>
+        <style jsx>{styles}</style>
+      </div>
+    );
+  }
+
   if (!isConnected) {
     return (
       <div className="portfolio-container">
         <div className="portfolio-header">
-          <span className="portfolio-icon">💼</span>
-          <span className="portfolio-title">Portfolio</span>
+          <div className="header-left">
+            <span className="portfolio-icon">💼</span>
+            <span className="portfolio-title">Portfolio</span>
+          </div>
         </div>
         <div className="portfolio-empty">
           <span className="empty-icon">🔗</span>

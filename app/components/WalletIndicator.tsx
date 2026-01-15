@@ -9,9 +9,15 @@ export function WalletIndicator() {
   const { connectors, connect } = useConnect();
   const [isOpen, setIsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const injectedConnector = connectors.find((connector) => connector.id === 'injected');
+
+  // Prevent hydration mismatch - wallet state differs between server/client
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -39,6 +45,18 @@ export function WalletIndicator() {
     disconnect();
     setIsOpen(false);
   };
+
+  // Don't render until mounted to prevent hydration mismatch
+  if (!mounted) {
+    return (
+      <div className="fixed top-4 left-4 z-50">
+        <div className="px-3 py-1.5 rounded-full text-xs font-medium shadow-lg flex items-center gap-2 bg-gray-100 text-gray-600 border border-gray-300">
+          <span className="w-2 h-2 rounded-full bg-gray-400" />
+          Loading...
+        </div>
+      </div>
+    );
+  }
 
   if (!isConnected) {
     // Show connect button

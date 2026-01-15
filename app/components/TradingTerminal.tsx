@@ -24,6 +24,9 @@ import { parseTokenAmount } from "../lib/tokens";
 import { getMockQuote } from "../lib/inch-api";
 import { QuoteResult, TokenInfo } from "../types/order";
 import { usePortfolio } from "../hooks/usePortfolio";
+import StrategyPanel from "./StrategyPanel";
+import TriggeredStrategyModal from "./TriggeredStrategyModal";
+import { useStrategies } from "../contexts/StrategyContext";
 
 // Token cache for resolving tokens
 interface TokenCache {
@@ -89,9 +92,15 @@ export default function TradingTerminal() {
   const [pendingTrade, setPendingTrade] = useState<PendingTrade | null>(null);
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
   const [showNetworkMenu, setShowNetworkMenu] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const historyEndRef = useRef<HTMLDivElement>(null);
   const networkMenuRef = useRef<HTMLDivElement>(null);
+
+  // Prevent hydration mismatch for wallet-dependent UI
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const { chain } = useAccount();
   const { switchChain, isPending: isSwitching } = useSwitchChain();
@@ -134,10 +143,39 @@ export default function TradingTerminal() {
   // Portfolio hook - fetches all token balances
   const portfolio = usePortfolio();
 
+  // Strategy hook - manages trading strategies
+  const { 
+    triggeredStrategies, 
+    snoozeStrategy, 
+    markExecuted, 
+    dismissTriggered,
+    setBalances,
+  } = useStrategies();
+
+  // Sync portfolio balances to strategy context for real-time evaluation
+  // Use JSON.stringify to prevent infinite loops (portfolio.balances is new array each render)
+  const balancesKey = JSON.stringify(
+    portfolio.balances.map(b => ({ s: b.symbol, b: b.balance }))
+  );
+  useEffect(() => {
+    if (portfolio.balances.length > 0) {
+      const balanceMap: Record<string, number> = {};
+      portfolio.balances.forEach((b) => {
+        balanceMap[b.symbol] = parseFloat(b.balance);
+      });
+      setBalances(balanceMap);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [balancesKey]); // Use stable key instead of object reference
+
+  // Get the first triggered strategy to show (FIFO)
+  const currentTriggeredStrategy = triggeredStrategies[0];
+
   // Token cache - fetched from 1inch API
   const [tokenCache, setTokenCache] = useState<TokenCache>({ tokens: {}, count: 0 });
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [tokenSearch, setTokenSearch] = useState("");
+  const [showStrategyPanel, setShowStrategyPanel] = useState(false);
 
   // Fetch tokens on mount
   useEffect(() => {
@@ -827,11 +865,48 @@ export default function TradingTerminal() {
         </div>
       )}
 
+      {/* Strategy Panel Modal */}
+      {showStrategyPanel && (
+        <div className="modal-overlay" onClick={() => setShowStrategyPanel(false)}>
+          <div className="strategy-modal" onClick={(e) => e.stopPropagation()}>
+            <StrategyPanel onClose={() => setShowStrategyPanel(false)} />
+          </div>
+        </div>
+      )}
+
+      {/* Triggered Strategy Modal */}
+      {currentTriggeredStrategy && (
+        <TriggeredStrategyModal
+          strategy={currentTriggeredStrategy.strategy}
+          currentValue={currentTriggeredStrategy.evaluation.currentValues.lhs}
+          targetValue={currentTriggeredStrategy.evaluation.currentValues.rhs}
+          onExecute={async () => {
+            // For swap actions, we'd trigger the trade here
+            // For now, mark as executed
+            markExecuted(currentTriggeredStrategy.strategy.id);
+            // If it's a swap, trigger the trade flow
+            if (currentTriggeredStrategy.strategy.action.type === "swap") {
+              const action = currentTriggeredStrategy.strategy.action;
+              setInput(`swap ${action.sellPercentage || 10}% ${action.sellToken} for ${action.buyToken}`);
+              // Note: User will need to submit this manually for safety
+              addToHistory("confirm", `📊 Strategy "${currentTriggeredStrategy.strategy.name}" triggered! Review and execute the trade above.`);
+            }
+          }}
+          onDismiss={() => dismissTriggered(currentTriggeredStrategy.strategy.id)}
+          onSnooze={() => snoozeStrategy(currentTriggeredStrategy.strategy.id, 60)}
+        />
+      )}
+
       <div className="terminal-footer">
         <div className="footer-left">
+          <button 
+            className="token-badge clickable strategy-btn"
+            onClick={() => setShowStrategyPanel(!showStrategyPanel)}
+          >
+            📊 Strategies
+          </button>
           <span className="token-badge">ETH</span>
           <span className="token-badge">USDC</span>
-          <span className="token-badge">DEGEN</span>
           <button 
             className="token-badge clickable"
             onClick={() => setShowTokenModal(true)}
@@ -840,7 +915,9 @@ export default function TradingTerminal() {
           </button>
         </div>
         <div className="footer-right">
-          {isConnected ? (
+          {!mounted ? (
+            <span className="wallet-badge">Loading...</span>
+          ) : isConnected ? (
             <span className="wallet-badge connected">
               🟢 {address?.slice(0, 6)}...{address?.slice(-4)}
             </span>
@@ -1402,6 +1479,24 @@ export default function TradingTerminal() {
         .token-badge.clickable:hover {
           background: #30363d;
           color: #58a6ff;
+        }
+
+        .token-badge.strategy-btn {
+          background: linear-gradient(135deg, #21262d 0%, #30363d 100%);
+          color: #a371f7;
+        }
+
+        .token-badge.strategy-btn:hover {
+          background: linear-gradient(135deg, #30363d 0%, #484f58 100%);
+          color: #d2a8ff;
+        }
+
+        /* Strategy Modal */
+        .strategy-modal {
+          width: 90%;
+          max-width: 500px;
+          max-height: 80vh;
+          animation: modalSlideIn 0.2s ease;
         }
 
         /* Token Modal */
