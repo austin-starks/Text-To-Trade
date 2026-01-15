@@ -28,6 +28,7 @@ export interface Portfolio {
   totalUsdValue?: number;
   isLoading: boolean;
   error?: string;
+  refetch: () => void;
 }
 
 interface TokenInfo {
@@ -70,11 +71,12 @@ export function usePortfolio(): Portfolio {
     fetchTokens();
   }, []);
 
-  // Fetch native ETH balance
-  const { data: ethBalance, isLoading: ethLoading } = useBalance({
+  // Fetch native ETH balance with polling
+  const { data: ethBalance, isLoading: ethLoading, refetch: refetchEth } = useBalance({
     address,
     query: {
       enabled: isConnected && !!address,
+      refetchInterval: 10000, // Poll every 10 seconds
     },
   });
 
@@ -83,8 +85,8 @@ export function usePortfolio(): Portfolio {
     (token) => token.address.toLowerCase() !== NATIVE_ETH.toLowerCase()
   );
 
-  // Batch fetch all ERC20 balances using multicall
-  const { data: erc20Balances, isLoading: erc20Loading } = useReadContracts({
+  // Batch fetch all ERC20 balances using multicall with polling
+  const { data: erc20Balances, isLoading: erc20Loading, refetch: refetchErc20 } = useReadContracts({
     contracts: erc20Tokens.map((token) => ({
       address: token.address as `0x${string}`,
       abi: erc20Abi,
@@ -93,8 +95,15 @@ export function usePortfolio(): Portfolio {
     })),
     query: {
       enabled: isConnected && !!address && erc20Tokens.length > 0,
+      refetchInterval: 10000, // Poll every 10 seconds
     },
   });
+
+  // Manual refetch function
+  const refetch = () => {
+    refetchEth();
+    refetchErc20();
+  };
 
   // Build portfolio
   const balances: TokenBalance[] = [];
@@ -128,6 +137,7 @@ export function usePortfolio(): Portfolio {
   return {
     balances,
     isLoading: isLoadingTokens || ethLoading || erc20Loading,
+    refetch,
   };
 }
 

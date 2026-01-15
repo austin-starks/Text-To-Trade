@@ -171,6 +171,8 @@ export default function TradingTerminal() {
       addToHistory("success", `✅ Transaction confirmed! Hash: ${txHash.slice(0, 10)}...${txHash.slice(-8)}`);
       setPendingTrade(null);
       setTxHash(undefined);
+      // Refetch portfolio after successful swap
+      setTimeout(() => portfolio.refetch(), 2000); // Wait 2s for chain to update
     }
   }, [isTxSuccess, txHash]);
 
