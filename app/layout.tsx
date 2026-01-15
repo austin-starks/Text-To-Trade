@@ -42,6 +42,7 @@ export const metadata: Metadata = {
     apple: "/icon.png"
   },
   other: {
+    "base:app_id": "69692b388b0e0e7315e206f0",
     "fc:miniapp": JSON.stringify({
       version: "1",
       imageUrl: "https://starterminiapp.com/hero.png",
