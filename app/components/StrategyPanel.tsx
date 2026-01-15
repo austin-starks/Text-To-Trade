@@ -112,8 +112,8 @@ export default function StrategyPanel({ onClose }: StrategyPanelProps) {
       return;
     }
 
-    const lhs: Indicator = { type: "price", token: manualToken, value: null };
-    const rhs: Indicator = { type: "constant", token: null, value: priceValue };
+    const lhs: Indicator = { type: "price", token: manualToken, value: undefined };
+    const rhs: Indicator = { type: "constant", token: undefined, value: priceValue };
 
     const condition: BaseCondition = {
       type: "base",
@@ -816,7 +816,7 @@ function StrategyCard({
     // Get current price from condition
     if (strategy.condition.type === "base") {
       const baseCondition = strategy.condition as BaseCondition;
-      if (baseCondition.rhs?.type === "constant" && baseCondition.rhs.value !== null) {
+      if (baseCondition.rhs?.type === "constant" && baseCondition.rhs.value !== null && baseCondition.rhs.value !== undefined) {
         setEditPrice(baseCondition.rhs.value.toString());
       }
     }
