@@ -2,7 +2,7 @@
 
 import { useAccount, useBalance, useReadContracts } from "wagmi";
 import { formatUnits } from "viem";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 
 // ERC20 ABI for balanceOf
 const erc20Abi = [
@@ -21,11 +21,13 @@ export interface TokenBalance {
   balanceRaw: string; // Raw wei/smallest unit
   decimals: number;
   usdValue?: number;
+  price?: number;
 }
 
 export interface Portfolio {
   balances: TokenBalance[];
-  totalUsdValue?: number;
+  totalUsdValue: number;
+  prices: Record<string, number>;
   isLoading: boolean;
   error?: string;
   refetch: () => void;
@@ -42,18 +44,19 @@ interface TokenInfo {
 // Native ETH address
 const NATIVE_ETH = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 
-// Popular tokens to check balances for (subset for performance)
-const POPULAR_SYMBOLS = [
-  "WETH", "USDC", "USDT", "DAI", "DEGEN", "BRETT", 
-  "AERO", "cbBTC", "VIRTUAL", "TOSHI"
-];
+// Polling intervals
+const PRICE_POLL_INTERVAL = 5000; // 5 seconds for prices
+const BALANCE_POLL_INTERVAL = 10000; // 10 seconds for balances
 
 export function usePortfolio(): Portfolio {
   const { address, isConnected } = useAccount();
   const [tokens, setTokens] = useState<TokenInfo[]>([]);
   const [isLoadingTokens, setIsLoadingTokens] = useState(true);
+  const [prices, setPrices] = useState<Record<string, number>>({});
+  const [isLoadingPrices, setIsLoadingPrices] = useState(true);
+  const priceIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Fetch token list from API
+  // Fetch token list from API (once)
   useEffect(() => {
     async function fetchTokens() {
       try {
@@ -71,12 +74,42 @@ export function usePortfolio(): Portfolio {
     fetchTokens();
   }, []);
 
+  // Fetch prices function
+  const fetchPrices = useCallback(async () => {
+    try {
+      const response = await fetch("/api/prices");
+      const data = await response.json();
+      if (data.success && data.prices) {
+        setPrices(data.prices);
+      }
+    } catch (error) {
+      console.warn("Failed to fetch prices:", error);
+    } finally {
+      setIsLoadingPrices(false);
+    }
+  }, []);
+
+  // Poll prices every 5 seconds
+  useEffect(() => {
+    // Initial fetch
+    fetchPrices();
+
+    // Set up polling
+    priceIntervalRef.current = setInterval(fetchPrices, PRICE_POLL_INTERVAL);
+
+    return () => {
+      if (priceIntervalRef.current) {
+        clearInterval(priceIntervalRef.current);
+      }
+    };
+  }, [fetchPrices]);
+
   // Fetch native ETH balance with polling
   const { data: ethBalance, isLoading: ethLoading, refetch: refetchEth } = useBalance({
     address,
     query: {
       enabled: isConnected && !!address,
-      refetchInterval: 10000, // Poll every 10 seconds
+      refetchInterval: BALANCE_POLL_INTERVAL,
     },
   });
 
@@ -95,40 +128,56 @@ export function usePortfolio(): Portfolio {
     })),
     query: {
       enabled: isConnected && !!address && erc20Tokens.length > 0,
-      refetchInterval: 10000, // Poll every 10 seconds
+      refetchInterval: BALANCE_POLL_INTERVAL,
     },
   });
 
   // Manual refetch function
-  const refetch = () => {
+  const refetch = useCallback(() => {
     refetchEth();
     refetchErc20();
-  };
+    fetchPrices();
+  }, [refetchEth, refetchErc20, fetchPrices]);
 
-  // Build portfolio
+  // Build portfolio with prices
   const balances: TokenBalance[] = [];
+  let totalUsdValue = 0;
 
-  // Add ETH balance
+  // Add ETH balance with price
   if (ethBalance) {
+    const ethPrice = prices["ETH"] || 0;
+    const balanceNum = parseFloat(formatUnits(ethBalance.value, 18));
+    const usdValue = balanceNum * ethPrice;
+    totalUsdValue += usdValue;
+
     balances.push({
       symbol: "ETH",
       balance: formatUnits(ethBalance.value, 18),
       balanceRaw: ethBalance.value.toString(),
       decimals: 18,
+      price: ethPrice,
+      usdValue,
     });
   }
 
-  // Add ERC20 balances
+  // Add ERC20 balances with prices
   if (erc20Balances) {
     erc20Tokens.forEach((token, index) => {
       const result = erc20Balances[index];
       if (result.status === "success" && result.result) {
         const rawBalance = result.result as bigint;
+        const balanceNum = parseFloat(formatUnits(rawBalance, token.decimals));
+        const tokenPrice = prices[token.symbol] || 0;
+        const usdValue = balanceNum * tokenPrice;
+        totalUsdValue += usdValue;
+
         balances.push({
           symbol: token.symbol,
           balance: formatUnits(rawBalance, token.decimals),
           balanceRaw: rawBalance.toString(),
           decimals: token.decimals,
+          price: tokenPrice,
+          usdValue,
         });
       }
     });
@@ -136,8 +185,9 @@ export function usePortfolio(): Portfolio {
 
   return {
     balances,
-    isLoading: isLoadingTokens || ethLoading || erc20Loading,
+    totalUsdValue,
+    prices,
+    isLoading: isLoadingTokens || ethLoading || erc20Loading || isLoadingPrices,
     refetch,
   };
 }
-

@@ -7,9 +7,9 @@ import { getTokenList } from "../../lib/token-list";
 const INCH_PRICE_API = "https://api.1inch.dev/price/v1.1";
 const BASE_CHAIN_ID = 8453;
 
-// Server-side cache
+// Server-side cache (short TTL for responsive polling)
 let priceCache: { prices: Record<string, number>; fetchedAt: number } | null = null;
-const CACHE_TTL_MS = 30 * 1000; // 30 seconds
+const CACHE_TTL_MS = 5 * 1000; // 5 seconds to support responsive polling
 
 export async function GET(request: NextRequest) {
   try {
