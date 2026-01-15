@@ -1,8 +1,46 @@
 "use client";
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
-import { Strategy, StrategyStatus, StrategyEvaluation } from "../types/strategy";
+import { Strategy, StrategyStatus, StrategyEvaluation, Condition, BaseCondition, CompoundCondition } from "../types/strategy";
 import { evaluateStrategy } from "../lib/strategy-executor";
+import { prefetchPrices } from "../lib/price-service";
+
+/**
+ * Extract all tokens used in a condition (recursively for compound conditions)
+ */
+function extractTokensFromCondition(condition: Condition): string[] {
+  const tokens: string[] = [];
+  
+  if ("conditions" in condition) {
+    // Compound condition - recurse
+    const compound = condition as CompoundCondition;
+    for (const subCondition of compound.conditions) {
+      tokens.push(...extractTokensFromCondition(subCondition));
+    }
+  } else {
+    // Base condition - extract tokens from lhs and rhs
+    const base = condition as BaseCondition;
+    if (base.lhs?.token) tokens.push(base.lhs.token);
+    if (base.rhs?.token) tokens.push(base.rhs.token);
+  }
+  
+  return tokens;
+}
+
+/**
+ * Extract all unique tokens from a list of strategies
+ */
+function extractTokensFromStrategies(strategies: Strategy[]): string[] {
+  const tokens = new Set<string>();
+  
+  for (const strategy of strategies) {
+    if (strategy.status !== "active") continue;
+    const strategyTokens = extractTokensFromCondition(strategy.condition);
+    strategyTokens.forEach(t => tokens.add(t.toUpperCase()));
+  }
+  
+  return Array.from(tokens);
+}
 
 interface TriggeredStrategy {
   strategy: Strategy;
@@ -121,6 +159,12 @@ export function StrategyProvider({ children }: { children: React.ReactNode }) {
     const newEvaluations = new Map<string, StrategyEvaluation>();
     const newTriggered: TriggeredStrategy[] = [];
     const currentBalances = balancesRef.current;
+
+    // Prefetch prices for tokens used in active strategies
+    const strategyTokens = extractTokensFromStrategies(strategies);
+    if (strategyTokens.length > 0) {
+      await prefetchPrices(strategyTokens);
+    }
 
     // Filter strategies that need evaluation
     const toEvaluate = strategies.filter((strategy) => {

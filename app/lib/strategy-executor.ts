@@ -25,11 +25,16 @@ export async function getIndicatorValue(
   switch (indicator.type) {
     case "price":
       if (!indicator.token) return null;
-      return await getTokenPrice(indicator.token);
+      const price = await getTokenPrice(indicator.token);
+      console.log(`[Strategy] Price for ${indicator.token}: ${price}`);
+      return price;
 
     case "balance":
       if (!indicator.token) return null;
-      return balances[indicator.token] ?? balances[indicator.token.toUpperCase()] ?? 0;
+      // Try both original case and uppercase
+      const balance = balances[indicator.token] ?? balances[indicator.token.toUpperCase()] ?? 0;
+      console.log(`[Strategy] Balance for ${indicator.token}: ${balance} (available keys: ${Object.keys(balances).join(", ")})`);
+      return balance;
 
     case "constant":
       return indicator.value ?? null;
@@ -93,7 +98,10 @@ export async function evaluateBaseCondition(
   const lhsValue = await getIndicatorValue(condition.lhs, balances);
   const rhsValue = await getIndicatorValue(condition.rhs, balances);
 
+  console.log(`[Strategy] Evaluating condition: LHS=${lhsValue}, RHS=${rhsValue}, comparison=${condition.comparison}`);
+
   if (lhsValue === null || rhsValue === null) {
+    console.log(`[Strategy] Condition skipped - missing value (lhs: ${lhsValue}, rhs: ${rhsValue})`);
     return { met: false, lhsValue, rhsValue };
   }
 
@@ -103,6 +111,8 @@ export async function evaluateBaseCondition(
     : undefined;
 
   const met = compare(lhsValue, rhsValue, condition.comparison, cacheKey);
+  
+  console.log(`[Strategy] Condition result: ${lhsValue} ${condition.comparison} ${rhsValue} = ${met}`);
 
   return { met, lhsValue, rhsValue };
 }
