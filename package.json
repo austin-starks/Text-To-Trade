@@ -2,15 +2,15 @@
   "name": "text-to-trade",
   "version": "0.1.0",
   "private": true,
-  "description": "A simple starter template for building Base Mini Apps with Next.js",
-  "author": "patnir (https://github.com/patnir)",
+  "description": "Natural language trading on Base. Swap tokens using plain English, powered by AI and 1inch.",
+  "author": "austin and zhiping",
   "repository": {
     "type": "git",
-    "url": "https://github.com/patnir/starterminiapp.git"
+    "url": "https://github.com/austin-starks/Text-To-Trade.git"
   },
-  "homepage": "https://starterminiapp.com",
+  "homepage": "https://text-to-trade.vercel.app",
   "bugs": {
-    "url": "https://github.com/patnir/starterminiapp/issues"
+    "url": "https://github.com/austin-starks/Text-To-Trade/issues"
   },
   "scripts": {
     "dev": "next dev --turbopack",
