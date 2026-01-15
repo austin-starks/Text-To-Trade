@@ -54,8 +54,10 @@ export async function POST(request: NextRequest) {
     url.searchParams.set("dst", dst);
     url.searchParams.set("amount", amount);
     url.searchParams.set("from", from);
-    url.searchParams.set("slippage", slippage?.toString() || "1");
+    // Use higher slippage for volatile tokens - 5% default to handle meme coins
+    url.searchParams.set("slippage", slippage?.toString() || "5");
     url.searchParams.set("disableEstimate", "true"); // Skip on-chain simulation
+    url.searchParams.set("allowPartialFill", "false"); // Ensure full fill or fail
 
     console.log("[swap] Calling 1inch API:", url.toString());
     const fetchStart = Date.now();

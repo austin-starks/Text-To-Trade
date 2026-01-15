@@ -73,7 +73,7 @@ interface ParseOrderResponse {
 
 interface HistoryEntry {
   id: string;
-  type: "input" | "parsed" | "quote" | "error" | "thinking" | "success" | "confirm";
+  type: "input" | "parsed" | "quote" | "error" | "thinking" | "success" | "confirm" | "info";
   content: string;
   timestamp: Date;
 }
@@ -130,9 +130,16 @@ export default function TradingTerminal() {
   const { address, isConnected } = useAccount();
   const { sendTransaction, isPending: isSending } = useSendTransaction();
   const { writeContract, isPending: isApproving } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess: isTxSuccess } = useWaitForTransactionReceipt({
+  const { isLoading: isConfirming, isSuccess: isTxSuccess, isError: isTxError, error: txReceiptError } = useWaitForTransactionReceipt({
     hash: txHash,
   });
+  
+  // Log transaction state changes for debugging
+  useEffect(() => {
+    if (txHash) {
+      console.log("[TradingTerminal] Watching tx:", txHash, { isConfirming, isTxSuccess, isTxError });
+    }
+  }, [txHash, isConfirming, isTxSuccess, isTxError]);
   
   // Approval state
   const [approvalTxHash, setApprovalTxHash] = useState<`0x${string}` | undefined>();
@@ -213,6 +220,17 @@ export default function TradingTerminal() {
       setTimeout(() => portfolio.refetch(), 2000); // Wait 2s for chain to update
     }
   }, [isTxSuccess, txHash]);
+
+  // Handle failed transaction
+  useEffect(() => {
+    if (isTxError && txHash) {
+      console.error("[TradingTerminal] Transaction failed:", txReceiptError);
+      addToHistory("error", `❌ Transaction failed! ${txReceiptError?.message || "Unknown error"}`);
+      addToHistory("info", `🔗 Check on Basescan: https://basescan.org/tx/${txHash}`);
+      setPendingTrade(null);
+      setTxHash(undefined);
+    }
+  }, [isTxError, txHash, txReceiptError]);
 
   // Handle successful approval - automatically proceed with swap
   useEffect(() => {
@@ -415,19 +433,29 @@ export default function TradingTerminal() {
 
       if (!data.success) {
         // If we can't check allowance, try to approve anyway
+        console.log("[Approval] Failed to check allowance:", data.error);
         addToHistory("quote", "Requesting token approval...");
       } else {
         const currentAllowance = BigInt(data.allowance || "0");
         const requiredAmount = BigInt(pendingTrade.sellAmountWei);
         
+        console.log("[Approval] Check:", {
+          token: pendingTrade.sellToken.symbol,
+          currentAllowance: currentAllowance.toString(),
+          requiredAmount: requiredAmount.toString(),
+          isApproved: currentAllowance >= requiredAmount,
+        });
+        
         if (currentAllowance >= requiredAmount) {
+          addToHistory("success", `✅ ${pendingTrade.sellToken.symbol} already approved`);
           return true; // Already approved
         }
         
         addToHistory("quote", `🔐 Approval needed for ${pendingTrade.sellToken.symbol}`);
       }
 
-      // Request approval
+      // Request approval - use max uint256 for unlimited approval (common practice)
+      const MAX_UINT256 = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
       addToHistory("thinking", "Confirm approval in your wallet...");
       
       writeContract(
@@ -435,7 +463,7 @@ export default function TradingTerminal() {
           address: pendingTrade.sellToken.address as `0x${string}`,
           abi: erc20Abi,
           functionName: "approve",
-          args: [INCH_ROUTER_ADDRESS, BigInt(pendingTrade.sellAmountWei)],
+          args: [INCH_ROUTER_ADDRESS, MAX_UINT256],
         },
         {
           onSuccess: (hash) => {
@@ -503,6 +531,43 @@ export default function TradingTerminal() {
         }
       }
 
+      // Pre-flight allowance check for non-ETH tokens
+      const isSellingEthForSwap = pendingTrade.sellToken.address.toLowerCase() === NATIVE_ETH_ADDRESS.toLowerCase();
+      if (!isSellingEthForSwap) {
+        const allowanceCheck = await fetch(
+          `/api/allowance?token=${pendingTrade.sellToken.address}&owner=${address}&spender=${INCH_ROUTER_ADDRESS}`
+        );
+        const allowanceData = await allowanceCheck.json();
+        
+        if (allowanceData.success) {
+          const currentAllowance = BigInt(allowanceData.allowance || "0");
+          const requiredAmount = BigInt(swapAmount);
+          
+          console.log("[Swap Pre-flight] Allowance check:", {
+            token: pendingTrade.sellToken.symbol,
+            currentAllowance: currentAllowance.toString(),
+            requiredAmount: requiredAmount.toString(),
+            isApproved: currentAllowance >= requiredAmount,
+          });
+          
+          if (currentAllowance < requiredAmount) {
+            setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+            addToHistory("error", `❌ Token not approved! Please approve ${pendingTrade.sellToken.symbol} first.`);
+            // Trigger approval flow
+            await checkAndRequestApproval();
+            return;
+          }
+        } else {
+          console.warn("[Swap Pre-flight] Could not verify allowance:", allowanceData.error);
+        }
+      }
+
+      // Use 5% slippage for volatile tokens - helps prevent "execution reverted" errors
+      // Meme coins like DEGEN have low liquidity and high volatility
+      const SLIPPAGE_PERCENT = 5;
+      
+      addToHistory("info", `⚠️ Using ${SLIPPAGE_PERCENT}% slippage for price protection`);
+      
       const response = await fetch("/api/swap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -511,7 +576,7 @@ export default function TradingTerminal() {
           dst: pendingTrade.buyToken.address,
           amount: swapAmount,
           from: address,
-          slippage: 1,
+          slippage: SLIPPAGE_PERCENT,
         }),
       });
 
@@ -534,6 +599,12 @@ export default function TradingTerminal() {
       }
 
       addToHistory("thinking", "Confirm swap in your wallet...");
+      
+      console.log("[TradingTerminal] Calling sendTransaction with:", {
+        to: data.tx.to,
+        value: data.tx.value,
+        gas: data.tx.gas,
+      });
 
       sendTransaction(
         {
@@ -546,7 +617,9 @@ export default function TradingTerminal() {
           onSuccess: (hash) => {
             setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
             setTxHash(hash);
-            addToHistory("success", `📤 Swap sent! Waiting for confirmation...`);
+            console.log("[TradingTerminal] Transaction sent:", hash);
+            addToHistory("success", `📤 Swap sent! Hash: ${hash.slice(0, 10)}...`);
+            addToHistory("info", `🔗 View on Basescan: https://basescan.org/tx/${hash}`);
           },
           onError: (error) => {
             setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
@@ -723,6 +796,7 @@ export default function TradingTerminal() {
                 {entry.type === "thinking" && "⟳"}
                 {entry.type === "success" && "✓"}
                 {entry.type === "confirm" && "?"}
+                {entry.type === "info" && "ℹ"}
               </span>
               <span className="entry-content">{entry.content}</span>
             </div>
