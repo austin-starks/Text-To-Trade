@@ -23,7 +23,7 @@ export function MiniAppProvider({ children }: { children: ReactNode }) {
         setIsInMiniApp(status);
 
         const context = await sdk.context;
-        if (!context.client.added) {
+        if (context?.client && !context.client.added) {
           try {
             await sdk.actions.addMiniApp();
           } catch (error) {

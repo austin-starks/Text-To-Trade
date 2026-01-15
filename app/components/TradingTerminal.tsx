@@ -1,35 +1,68 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { parseOrderInput, ParseResult } from "../lib/order-parser";
+import { useAccount, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
+import { parseUnits, formatUnits } from "viem";
 import { resolveToken, parseTokenAmount } from "../lib/tokens";
 import { getMockQuote } from "../lib/inch-api";
-import { QuoteResult, ParsedOrder } from "../types/order";
+import { QuoteResult, TokenInfo } from "../types/order";
+
+// LLM-parsed order from API
+interface LLMParsedOrder {
+  action: "swap" | "buy" | "sell";
+  sellToken: string;
+  buyToken: string;
+  sellAmount: string;
+  buyAmount: string;
+  confidence: number;
+  reasoning: string;
+}
 
 interface HistoryEntry {
   id: string;
-  type: "input" | "parsed" | "quote" | "error";
+  type: "input" | "parsed" | "quote" | "error" | "thinking" | "success" | "confirm";
   content: string;
   timestamp: Date;
-  data?: ParsedOrder | QuoteResult | ParseResult;
+}
+
+interface PendingTrade {
+  quote: QuoteResult;
+  sellToken: TokenInfo;
+  buyToken: TokenInfo;
+  sellAmountWei: string;
 }
 
 export default function TradingTerminal() {
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [pendingTrade, setPendingTrade] = useState<PendingTrade | null>(null);
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
+  
   const inputRef = useRef<HTMLInputElement>(null);
   const historyEndRef = useRef<HTMLDivElement>(null);
+
+  // Wagmi hooks
+  const { address, isConnected } = useAccount();
+  const { sendTransaction, isPending: isSending } = useSendTransaction();
+  const { isLoading: isConfirming, isSuccess: isTxSuccess } = useWaitForTransactionReceipt({
+    hash: txHash,
+  });
 
   useEffect(() => {
     historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [history]);
 
-  const addToHistory = (
-    type: HistoryEntry["type"],
-    content: string,
-    data?: HistoryEntry["data"]
-  ) => {
+  // Handle successful transaction
+  useEffect(() => {
+    if (isTxSuccess && txHash) {
+      addToHistory("success", `✅ Transaction confirmed! Hash: ${txHash.slice(0, 10)}...${txHash.slice(-8)}`);
+      setPendingTrade(null);
+      setTxHash(undefined);
+    }
+  }, [isTxSuccess, txHash]);
+
+  const addToHistory = (type: HistoryEntry["type"], content: string) => {
     setHistory((prev) => [
       ...prev,
       {
@@ -37,7 +70,6 @@ export default function TradingTerminal() {
         type,
         content,
         timestamp: new Date(),
-        data,
       },
     ]);
   };
@@ -49,44 +81,60 @@ export default function TradingTerminal() {
     const userInput = input.trim();
     setInput("");
     setIsProcessing(true);
+    setPendingTrade(null); // Clear any pending trade
 
-    // Add user input to history
     addToHistory("input", userInput);
-
-    // Parse the input
-    const parseResult = parseOrderInput(userInput);
-
-    if (!parseResult.success) {
-      addToHistory("error", parseResult.error || "Unknown error", parseResult);
-      if (parseResult.suggestions?.length) {
-        addToHistory(
-          "error",
-          `Try: ${parseResult.suggestions.join(" | ")}`
-        );
-      }
-      setIsProcessing(false);
-      return;
-    }
-
-    const order = parseResult.order!;
-    addToHistory(
-      "parsed",
-      `Parsed: ${order.action.toUpperCase()} ${order.sellAmount || "?"} ${order.sellToken} → ${order.buyToken}`,
-      order
-    );
-
-    // Get quote
-    const sellToken = resolveToken(order.sellToken)!;
-    const buyToken = resolveToken(order.buyToken)!;
+    addToHistory("thinking", "Parsing with AI...");
 
     try {
+      // Call the LLM API to parse the order
+      const response = await fetch("/api/parse-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: userInput }),
+      });
+
+      const data = await response.json();
+
+      // Remove thinking message
+      setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+
+      if (!data.success || !data.order) {
+        addToHistory("error", data.error || "Could not understand that trade request");
+        setIsProcessing(false);
+        return;
+      }
+
+      const order: LLMParsedOrder = data.order;
+
+      // Show confidence and reasoning
+      const confidenceEmoji = order.confidence >= 0.8 ? "🟢" : order.confidence >= 0.5 ? "🟡" : "🔴";
+      addToHistory(
+        "parsed",
+        `${confidenceEmoji} Parsed: ${order.action.toUpperCase()} ${order.sellAmount || "?"} ${order.sellToken} → ${order.buyToken}`
+      );
+
+      if (order.reasoning) {
+        addToHistory("parsed", `AI: ${order.reasoning}`);
+      }
+
+      // Validate tokens exist
+      const sellToken = resolveToken(order.sellToken);
+      const buyToken = resolveToken(order.buyToken);
+
+      if (!sellToken || !buyToken) {
+        addToHistory("error", `Token not found: ${!sellToken ? order.sellToken : order.buyToken}`);
+        setIsProcessing(false);
+        return;
+      }
+
+      // Calculate sell amount
       let sellAmountWei: string;
 
-      if (order.sellAmount) {
-        // Direct sell amount specified
+      if (order.sellAmount && order.sellAmount !== "") {
         sellAmountWei = parseTokenAmount(order.sellAmount, sellToken.decimals);
-      } else if (order.buyAmount) {
-        // "buy X ETH" - estimate sell amount based on mock prices
+      } else if (order.buyAmount && order.buyAmount !== "") {
+        // Estimate sell amount based on mock prices
         const mockPrices: Record<string, number> = {
           ETH: 3200, WETH: 3200, USDC: 1, USDT: 1, DAI: 1,
           DEGEN: 0.008, BRETT: 0.12, AERO: 1.2, cbBTC: 95000,
@@ -97,40 +145,124 @@ export default function TradingTerminal() {
         const buyAmountNum = Number(order.buyAmount);
         const estimatedSellAmount = (buyAmountNum * buyPrice) / sellPrice;
         sellAmountWei = parseTokenAmount(estimatedSellAmount.toFixed(6), sellToken.decimals);
-        
-        addToHistory(
-          "parsed",
-          `Estimated: ~${estimatedSellAmount.toFixed(2)} ${sellToken.symbol} needed`
-        );
+
+        addToHistory("parsed", `Estimated: ~${estimatedSellAmount.toFixed(2)} ${sellToken.symbol} needed`);
       } else {
         addToHistory("error", "Need an amount to get a quote");
         setIsProcessing(false);
         return;
       }
 
-      // Using mock quote for development (no API key needed)
-      // Replace with real 1inch API call when you have a key
+      // Get quote (mock for now, ready for real 1inch)
       const quote = getMockQuote(sellToken, buyToken, sellAmountWei);
 
       addToHistory(
         "quote",
-        `Quote: ${quote.sellAmountDisplay} ${quote.sellToken.symbol} → ${quote.buyAmountDisplay} ${quote.buyToken.symbol}`,
-        quote
+        `Quote: ${quote.sellAmountDisplay} ${quote.sellToken.symbol} → ${quote.buyAmountDisplay} ${quote.buyToken.symbol}`
       );
       addToHistory(
         "quote",
         `Route: ${quote.protocols.join(" → ")} | Gas: ~${Number(quote.estimatedGas).toLocaleString()}`
       );
-    } catch {
-      addToHistory("error", "Failed to fetch quote. Please try again.");
+
+      // Set pending trade for confirmation
+      setPendingTrade({
+        quote,
+        sellToken,
+        buyToken,
+        sellAmountWei,
+      });
+
+      addToHistory("confirm", "Review the trade above and click Confirm to execute");
+
+    } catch (error) {
+      setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+      addToHistory("error", error instanceof Error ? error.message : "Failed to process order");
     }
 
     setIsProcessing(false);
   };
 
+  const handleConfirmTrade = async () => {
+    if (!pendingTrade || !address) {
+      addToHistory("error", "Please connect your wallet first");
+      return;
+    }
+
+    addToHistory("thinking", "Preparing transaction...");
+
+    try {
+      // Call swap API to get transaction data
+      const response = await fetch("/api/swap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          src: pendingTrade.sellToken.address,
+          dst: pendingTrade.buyToken.address,
+          amount: pendingTrade.sellAmountWei,
+          from: address,
+          slippage: 1,
+        }),
+      });
+
+      const data = await response.json();
+      setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+
+      if (!data.success) {
+        addToHistory("error", data.error || "Failed to prepare swap");
+        return;
+      }
+
+      if (data.mock) {
+        addToHistory("quote", "⚠️ Preview mode - no 1inch API key configured");
+        addToHistory("success", "Would execute: " + JSON.stringify({
+          to: data.tx.to,
+          value: data.tx.value,
+        }));
+        setPendingTrade(null);
+        return;
+      }
+
+      // Execute the transaction
+      addToHistory("thinking", "Confirm in your wallet...");
+
+      sendTransaction(
+        {
+          to: data.tx.to as `0x${string}`,
+          data: data.tx.data as `0x${string}`,
+          value: BigInt(data.tx.value || "0"),
+          gas: BigInt(data.tx.gas || "300000"),
+        },
+        {
+          onSuccess: (hash) => {
+            setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+            setTxHash(hash);
+            addToHistory("success", `📤 Transaction sent! Waiting for confirmation...`);
+          },
+          onError: (error) => {
+            setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+            addToHistory("error", `Transaction failed: ${error.message}`);
+          },
+        }
+      );
+
+    } catch (error) {
+      setHistory((prev) => prev.filter((h) => h.type !== "thinking"));
+      addToHistory("error", error instanceof Error ? error.message : "Failed to execute swap");
+    }
+  };
+
+  const handleCancelTrade = () => {
+    setPendingTrade(null);
+    addToHistory("error", "Trade cancelled");
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       setInput("");
+      if (pendingTrade) {
+        handleCancelTrade();
+      }
     }
   };
 
@@ -180,30 +312,18 @@ export default function TradingTerminal() {
               <p className="welcome-subtitle">Type your trade in plain English</p>
             </div>
             <div className="examples">
-              <div className="example-label">Examples:</div>
-              <button
-                className="example-btn"
-                onClick={() => setInput("swap 100 USDC for ETH")}
-              >
+              <div className="example-label">Try these:</div>
+              <button className="example-btn" onClick={() => setInput("swap 100 USDC for ETH")}>
                 swap 100 USDC for ETH
               </button>
-              <button
-                className="example-btn"
-                onClick={() => setInput("buy 0.05 ETH with USDC")}
-              >
-                buy 0.05 ETH with USDC
+              <button className="example-btn" onClick={() => setInput("ape into DEGEN with $50")}>
+                ape into DEGEN with $50
               </button>
-              <button
-                className="example-btn"
-                onClick={() => setInput("sell 10000 DEGEN for USDC")}
-              >
-                sell 10000 DEGEN for USDC
+              <button className="example-btn" onClick={() => setInput("dump 0.1 ETH for stables")}>
+                dump 0.1 ETH for stables
               </button>
-              <button
-                className="example-btn"
-                onClick={() => setInput("50 USDC to BRETT")}
-              >
-                50 USDC to BRETT
+              <button className="example-btn" onClick={() => setInput("get me some BRETT, like $20 worth")}>
+                get me some BRETT, like $20 worth
               </button>
             </div>
           </div>
@@ -218,12 +338,70 @@ export default function TradingTerminal() {
                 {entry.type === "parsed" && "✓"}
                 {entry.type === "quote" && "◆"}
                 {entry.type === "error" && "✗"}
+                {entry.type === "thinking" && "⟳"}
+                {entry.type === "success" && "✓"}
+                {entry.type === "confirm" && "?"}
               </span>
               <span className="entry-content">{entry.content}</span>
             </div>
           ))}
           <div ref={historyEndRef} />
         </div>
+
+        {/* Confirmation Panel */}
+        {pendingTrade && (
+          <div className="confirm-panel">
+            <div className="confirm-header">
+              <span className="confirm-icon">⚡</span>
+              <span>Ready to Execute</span>
+            </div>
+            <div className="confirm-details">
+              <div className="confirm-row">
+                <span className="confirm-label">You Pay</span>
+                <span className="confirm-value sell">
+                  {pendingTrade.quote.sellAmountDisplay} {pendingTrade.quote.sellToken.symbol}
+                </span>
+              </div>
+              <div className="confirm-arrow">↓</div>
+              <div className="confirm-row">
+                <span className="confirm-label">You Receive</span>
+                <span className="confirm-value buy">
+                  {pendingTrade.quote.buyAmountDisplay} {pendingTrade.quote.buyToken.symbol}
+                </span>
+              </div>
+              <div className="confirm-row small">
+                <span className="confirm-label">Route</span>
+                <span className="confirm-value">{pendingTrade.quote.protocols.join(" → ")}</span>
+              </div>
+              <div className="confirm-row small">
+                <span className="confirm-label">Est. Gas</span>
+                <span className="confirm-value">~{Number(pendingTrade.quote.estimatedGas).toLocaleString()}</span>
+              </div>
+            </div>
+            <div className="confirm-actions">
+              <button
+                className="confirm-btn cancel"
+                onClick={handleCancelTrade}
+                disabled={isSending || isConfirming}
+              >
+                Cancel
+              </button>
+              <button
+                className="confirm-btn execute"
+                onClick={handleConfirmTrade}
+                disabled={isSending || isConfirming || !isConnected}
+              >
+                {!isConnected
+                  ? "Connect Wallet"
+                  : isSending
+                  ? "Confirm in Wallet..."
+                  : isConfirming
+                  ? "Confirming..."
+                  : "⚡ Execute Trade"}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Input */}
         <form onSubmit={handleSubmit} className="input-form">
@@ -252,7 +430,13 @@ export default function TradingTerminal() {
           <span className="token-badge">+8 more</span>
         </div>
         <div className="footer-right">
-          <span className="mode-badge">Preview Mode</span>
+          {isConnected ? (
+            <span className="wallet-badge connected">
+              🟢 {address?.slice(0, 6)}...{address?.slice(-4)}
+            </span>
+          ) : (
+            <span className="wallet-badge">Connect Wallet</span>
+          )}
         </div>
       </div>
 
@@ -423,6 +607,147 @@ export default function TradingTerminal() {
         .history-entry.error .entry-prefix { color: #f85149; }
         .history-entry.error .entry-content { color: #ffa198; }
 
+        .history-entry.thinking .entry-prefix { color: #8b949e; }
+        .history-entry.thinking .entry-content { 
+          color: #8b949e;
+          animation: blink 1s ease-in-out infinite;
+        }
+
+        .history-entry.success .entry-prefix { color: #3fb950; }
+        .history-entry.success .entry-content { color: #7ee787; }
+
+        .history-entry.confirm .entry-prefix { color: #f0883e; }
+        .history-entry.confirm .entry-content { color: #f0883e; }
+
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+
+        /* Confirmation Panel */
+        .confirm-panel {
+          background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+          border: 1px solid #30363d;
+          border-radius: 12px;
+          padding: 16px;
+          margin-bottom: 16px;
+          animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+          from {
+            opacity: 0;
+            transform: translateY(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        .confirm-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #f0883e;
+          font-size: 14px;
+          font-weight: 600;
+          margin-bottom: 16px;
+        }
+
+        .confirm-icon {
+          font-size: 18px;
+        }
+
+        .confirm-details {
+          background: #0d1117;
+          border-radius: 8px;
+          padding: 16px;
+          margin-bottom: 16px;
+        }
+
+        .confirm-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 8px 0;
+        }
+
+        .confirm-row.small {
+          padding: 4px 0;
+          font-size: 12px;
+        }
+
+        .confirm-label {
+          color: #8b949e;
+          font-size: 12px;
+        }
+
+        .confirm-value {
+          color: #f0f6fc;
+          font-weight: 500;
+        }
+
+        .confirm-value.sell {
+          color: #f85149;
+        }
+
+        .confirm-value.buy {
+          color: #3fb950;
+          font-size: 18px;
+        }
+
+        .confirm-arrow {
+          text-align: center;
+          color: #484f58;
+          font-size: 18px;
+          padding: 4px 0;
+        }
+
+        .confirm-actions {
+          display: flex;
+          gap: 12px;
+        }
+
+        .confirm-btn {
+          flex: 1;
+          padding: 12px 20px;
+          border-radius: 8px;
+          font-family: inherit;
+          font-size: 14px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .confirm-btn.cancel {
+          background: transparent;
+          border: 1px solid #30363d;
+          color: #8b949e;
+        }
+
+        .confirm-btn.cancel:hover:not(:disabled) {
+          background: #21262d;
+          border-color: #f85149;
+          color: #f85149;
+        }
+
+        .confirm-btn.execute {
+          background: linear-gradient(135deg, #238636 0%, #2ea043 100%);
+          border: none;
+          color: #ffffff;
+        }
+
+        .confirm-btn.execute:hover:not(:disabled) {
+          background: linear-gradient(135deg, #2ea043 0%, #3fb950 100%);
+          box-shadow: 0 0 20px rgba(46, 160, 67, 0.4);
+        }
+
+        .confirm-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
         .input-form {
           display: flex;
           align-items: center;
@@ -491,15 +816,18 @@ export default function TradingTerminal() {
           font-weight: 500;
         }
 
-        .mode-badge {
-          background: rgba(163, 113, 247, 0.15);
-          color: #a371f7;
+        .wallet-badge {
+          background: rgba(139, 148, 158, 0.15);
+          color: #8b949e;
           padding: 4px 10px;
           border-radius: 4px;
           font-size: 11px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
+          font-weight: 500;
+        }
+
+        .wallet-badge.connected {
+          background: rgba(63, 185, 80, 0.15);
+          color: #3fb950;
         }
 
         /* Scrollbar */
@@ -523,4 +851,3 @@ export default function TradingTerminal() {
     </div>
   );
 }
-
