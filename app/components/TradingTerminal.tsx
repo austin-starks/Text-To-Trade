@@ -1,10 +1,13 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { parseOrderInput, ParseResult } from "../lib/order-parser";
-import { resolveToken, parseTokenAmount } from "../lib/tokens";
+import { useEffect, useRef, useState } from "react";
+import { useAccount, useSwitchChain } from "wagmi";
+import { base } from "wagmi/chains";
+import { SUPPORTED_NETWORKS, SupportedChainId } from "../config";
 import { getMockQuote } from "../lib/inch-api";
-import { QuoteResult, ParsedOrder } from "../types/order";
+import { parseOrderInput, ParseResult } from "../lib/order-parser";
+import { parseTokenAmount, resolveToken } from "../lib/tokens";
+import { ParsedOrder, QuoteResult } from "../types/order";
 
 interface HistoryEntry {
   id: string;
@@ -18,8 +21,34 @@ export default function TradingTerminal() {
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showNetworkMenu, setShowNetworkMenu] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const historyEndRef = useRef<HTMLDivElement>(null);
+  const networkMenuRef = useRef<HTMLDivElement>(null);
+
+  const { chain } = useAccount();
+  const { switchChain, isPending: isSwitching } = useSwitchChain();
+
+  const currentChainId = (chain?.id ?? base.id) as SupportedChainId;
+  const currentNetwork = SUPPORTED_NETWORKS[currentChainId] ?? SUPPORTED_NETWORKS[base.id];
+
+  // Close network menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (networkMenuRef.current && !networkMenuRef.current.contains(e.target as Node)) {
+        setShowNetworkMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const handleNetworkSwitch = (chainId: SupportedChainId) => {
+    if (chainId !== currentChainId) {
+      switchChain({ chainId });
+    }
+    setShowNetworkMenu(false);
+  };
 
   useEffect(() => {
     historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -144,9 +173,37 @@ export default function TradingTerminal() {
           <span className="dot dot-green"></span>
         </div>
         <div className="terminal-title">text-to-trade</div>
-        <div className="terminal-status">
-          <span className="status-dot"></span>
-          Base Mainnet
+        <div className="network-selector" ref={networkMenuRef}>
+          <button
+            className="network-btn"
+            onClick={() => setShowNetworkMenu(!showNetworkMenu)}
+            disabled={isSwitching}
+          >
+            <span
+              className="status-dot"
+              style={{ background: currentNetwork.color }}
+            ></span>
+            {isSwitching ? "Switching..." : currentNetwork.name}
+            <span className="chevron">{showNetworkMenu ? "▲" : "▼"}</span>
+          </button>
+          {showNetworkMenu && (
+            <div className="network-menu">
+              {Object.entries(SUPPORTED_NETWORKS).map(([id, network]) => (
+                <button
+                  key={id}
+                  className={`network-option ${Number(id) === currentChainId ? "active" : ""}`}
+                  onClick={() => handleNetworkSwitch(Number(id) as SupportedChainId)}
+                >
+                  <span
+                    className="option-dot"
+                    style={{ background: network.color }}
+                  ></span>
+                  {network.name}
+                  {Number(id) === currentChainId && <span className="check">✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -321,6 +378,89 @@ export default function TradingTerminal() {
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.5; }
+        }
+
+        .network-selector {
+          position: relative;
+        }
+
+        .network-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          background: #21262d;
+          border: 1px solid #30363d;
+          color: #f0f6fc;
+          padding: 6px 10px;
+          border-radius: 6px;
+          font-size: 11px;
+          font-family: inherit;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .network-btn:hover {
+          background: #30363d;
+          border-color: #484f58;
+        }
+
+        .network-btn:disabled {
+          opacity: 0.7;
+          cursor: not-allowed;
+        }
+
+        .chevron {
+          font-size: 8px;
+          color: #8b949e;
+          margin-left: 2px;
+        }
+
+        .network-menu {
+          position: absolute;
+          top: calc(100% + 4px);
+          right: 0;
+          background: #161b22;
+          border: 1px solid #30363d;
+          border-radius: 8px;
+          overflow: hidden;
+          min-width: 160px;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+          z-index: 100;
+        }
+
+        .network-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          width: 100%;
+          padding: 10px 12px;
+          background: transparent;
+          border: none;
+          color: #f0f6fc;
+          font-size: 12px;
+          font-family: inherit;
+          cursor: pointer;
+          transition: background 0.15s ease;
+        }
+
+        .network-option:hover {
+          background: #21262d;
+        }
+
+        .network-option.active {
+          background: rgba(88, 166, 255, 0.1);
+        }
+
+        .option-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+        }
+
+        .check {
+          margin-left: auto;
+          color: #3fb950;
         }
 
         .terminal-body {
